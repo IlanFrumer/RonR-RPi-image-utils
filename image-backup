@@ -113,6 +113,11 @@ backup()
     sed -i "/^[[:space:]]*#/!s|^\S\+\(\s\+/boot\S*\s\+vfat\s\+.*\)$|PARTUUID=${PTUUID}-01\1|" "${MNTPATH}/etc/fstab"
     sed -i "/^[[:space:]]*#/!s|^\S\+\(\s\+/\s\+.*\)$|PARTUUID=${PTUUID}-02\1|" "${MNTPATH}/etc/fstab"
   fi
+  if [[ "${IS_OPI}" -eq 1 && "${NOEXPAND}" = "FALSE" && "${ROOT_TYPE}" != "f2fs" ]]; then
+    if [ -f "${MNTPATH}/lib/systemd/system/orangepi-resize-filesystem.service" ]; then
+      systemctl --root="${MNTPATH}" enable orangepi-resize-filesystem &> /dev/null
+    fi
+  fi
   if [[ "${OSID}" != "ubuntu" && "${NOEXPAND}" = "FALSE" && "${ROOT_TYPE}" != "f2fs" ]]; then
     if [ ! -f "${MNTPATH}/etc/rc.local" ]; then
       cat <<EOF > "${MNTPATH}/etc/rc.local"
