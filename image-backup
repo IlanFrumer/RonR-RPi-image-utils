@@ -9,10 +9,17 @@ ONEMB=$((1024 * 1024))
 copy_bootloader()
 {
   if [ "${BOOTSTART}" -ne 0 ]; then
-    # Copy bootloader (everything before BOOTSTART) to image
-    dd if="${ROOT_DEV}" of="${IMGFILE}" bs=512 count=${BOOTSTART} conv=notrunc
-    if [ $? -ne 0 ]; then
-      errexit "Unable to copy bootloader to image"
+    # Copy bootloader bytes that live between the GPT area and the first partition.
+    # Sectors 0-33 are the protective MBR + GPT header + GPT entries; skip them so
+    # we never overwrite the image's own partition table (critical for incremental
+    # backups where the GPT must remain intact).
+    local GPT_END=34
+    if [ "${BOOTSTART}" -gt "${GPT_END}" ]; then
+      dd if="${ROOT_DEV}" of="${IMGFILE}" bs=512 skip=${GPT_END} seek=${GPT_END} \
+         count=$((${BOOTSTART} - ${GPT_END})) conv=notrunc
+      if [ $? -ne 0 ]; then
+        errexit "Unable to copy bootloader to image"
+      fi
     fi
   fi
 }
