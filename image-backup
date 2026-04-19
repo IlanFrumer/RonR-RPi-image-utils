@@ -6,6 +6,17 @@ MNTPATH="/tmp/img-backup-mnt"
 
 ONEMB=$((1024 * 1024))
 
+copy_bootloader()
+{
+  if [ "${BOOTSTART}" -ne 0 ]; then
+    # Copy bootloader (everything before BOOTSTART) to image
+    dd if="${ROOT_DEV}" of="${IMGFILE}" bs=512 count=${BOOTSTART} conv=notrunc
+    if [ $? -ne 0 ]; then
+      errexit "Unable to copy bootloader to image"
+    fi
+  fi
+}
+
 errexit()
 {
   echo ""
@@ -32,7 +43,7 @@ rmloop()
 {
   if [ "${LOOP}" != "" ]; then
     losetup -d "${LOOP}"
-    LOOP="" 
+    LOOP=""
   fi
 }
 
@@ -222,11 +233,20 @@ if [ $? -ne 0 ]; then
   errexit "rsync not installed (run: apt-get install rsync)"
 fi
 OSID="$(sed -n 's|^ID=\(.*\)|\1|p' /etc/os-release)"
+grep -qa "OPi" /proc/device-tree/model && echo "Orange Pi detected" && IS_OPI=1 || IS_OPI=0
 BOOTMNT="${MNTPATH}$(sed -n '/^[[:space:]]*#/!s|^\S\+\s\+\(/boot\S*\)\s\+.*$|\1|p' /etc/fstab)"
-if [ "${BOOTMNT}" = "${MNTPATH}/boot/firmware" ]; then
+if [ "${IS_OPI}" -eq 1 ]; then
+  BOOTSIZE=1024          # 1 GiB boot partition (Orange Pi uses a much larger one)
+  BOOTSTART=61440        # starts at sector 61440 (≈30 MiB offset)
+  BOOTTYPE="EA00"        # partition type used by Orange Pi / Armbian
+elif [ "${BOOTMNT}" = "${MNTPATH}/boot/firmware" ]; then
   BOOTSIZE=512
+  BOOTSTART=0
+  BOOTTYPE="0700"
 else
   BOOTSIZE=256
+  BOOTSTART=0
+  BOOTTYPE="0700"
 fi
 ROOT_PART="$(mount | sed -n 's|^\(/dev/.*\) on / .*|\1|p')"
 ROOT_DEV_P="$(sed 's/[0-9]\+$//' <<< "${ROOT_PART}")"
@@ -382,10 +402,11 @@ if [ "${IMGFILE}" = "" ]; then
       errexit "Unable to delete existing image file"
     fi
   fi
-  truncate -s $(((${IRFSSIZE} + ${BOOTSIZE}) * ${ONEMB})) "${IMGFILE}"
+  truncate -s $(((${IRFSSIZE} + ${BOOTSIZE}) * ${ONEMB} + ${BOOTSTART} * 512)) "${IMGFILE}"
   if [ $? -ne 0 ]; then
     errexit "Unable to create image file"
   fi
+  copy_bootloader
   if [ "${PTTYPE}" = "dos" ]; then
     echo "label: dos" | sfdisk "${IMGFILE}" > /dev/null
     sfdisk "${IMGFILE}" <<EOF > /dev/null
@@ -394,8 +415,8 @@ if [ "${IMGFILE}" = "" ]; then
 EOF
   else
     sgdisk -Z "${IMGFILE}" &> /dev/null
-    sgdisk -n 1:0:+${BOOTSIZE}M "${IMGFILE}" &> /dev/null
-    sgdisk -t 1:0700 "${IMGFILE}" > /dev/null
+    sgdisk -n 1:${BOOTSTART}:+${BOOTSIZE}M "${IMGFILE}" &> /dev/null
+    sgdisk -t 1:${BOOTTYPE} "${IMGFILE}" > /dev/null
     sgdisk -n 2:0:0 "${IMGFILE}" &> /dev/null
     sgdisk -t 2:8300 "${IMGFILE}" > /dev/null
     gdisk "${IMGFILE}" <<EOF > /dev/null
@@ -410,8 +431,13 @@ w
 y
 EOF
   fi
+  BOOT_UUID="$(blkid -s UUID -o value ${ROOT_DEV_P}1 2>/dev/null)"
+  MKFS_VFAT_OPTS=(-F 32 -n boot -s 4)
+  if [ -n "${BOOT_UUID}" ]; then
+    MKFS_VFAT_OPTS+=(-i "$(echo ${BOOT_UUID} | tr -d '-')")
+  fi
   mkloop
-  mkfs.vfat -F 32 -n boot -s 4 "${LOOP}p1" &> /dev/null
+  mkfs.vfat "${MKFS_VFAT_OPTS[@]}" "${LOOP}p1" &> /dev/null
   if [ $? -ne 0 ]; then
     errexit "Unable to create image BOOT filesystem"
   fi
@@ -426,6 +452,10 @@ EOF
   fi
   if [ $? -ne 0 ]; then
     errexit "Unable to create image ROOT filesystem"
+  fi
+  ROOT_UUID="$(blkid -s UUID -o value ${ROOT_PART} 2>/dev/null)"
+  if [ -n "${ROOT_UUID}" ]; then
+    tune2fs -U "${ROOT_UUID}" "${LOOP}p2" > /dev/null
   fi
   rmloop
   echo ""
@@ -472,8 +502,8 @@ w
 EOF
     else
       sgdisk -Z "${IMGFILE}" &> /dev/null
-      sgdisk -n 1:0:+${BOOTSIZE}M "${IMGFILE}" &> /dev/null
-      sgdisk -t 1:0700 "${IMGFILE}" > /dev/null
+      sgdisk -n 1:${BOOTSTART}:+${BOOTSIZE}M "${IMGFILE}" &> /dev/null
+      sgdisk -t 1:${BOOTTYPE} "${IMGFILE}" > /dev/null
       sgdisk -n 2:0:0 "${IMGFILE}" &> /dev/null
       sgdisk -t 2:8300 "${IMGFILE}" > /dev/null
       sgdisk -u 1:"${PARTUUID_B}" "${IMGFILE}" > /dev/null
@@ -526,6 +556,7 @@ else
   elif [ ! -f "${IMGFILE}" ]; then
     errexit "${IMGFILE} not found"
   fi
+  copy_bootloader
   backup
 fi
 sync
